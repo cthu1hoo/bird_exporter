@@ -59,7 +59,7 @@ deploy:
       for pkg in "bird_exporter-${CI_COMMIT_SHORT_SHA}.tgz"; do
         echo uploading $pkg to ${NEXUS_HOST} repo ${NEXUS_REPO}...
 
-        curl --user "${NEXUS_USER}:${NEXUS_PASSWORD}" \
+        curl --fail --user "${NEXUS_USER}:${NEXUS_PASSWORD}" \
           --upload-file $pkg \
           "${NEXUS_HOST}/repository/${NEXUS_REPO}/${CI_PROJECT_NAME}/"
       done

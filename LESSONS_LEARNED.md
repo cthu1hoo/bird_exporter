@@ -108,6 +108,24 @@ primary group `daemon`). Recorded 2026-11-08 during the BIRD/OSPF metrics resear
 - Useful read-only checks: `glab api "projects?search=bird_exporter"`,
   `glab api "projects/362/repository/branches"`, `glab mr list -R git/bird_exporter`.
 
+## CI and Nexus deployment (verified 2026-11-08)
+
+- The committed `.gitlab-ci.yml` works on the fork: `golangci-lint` and `gotest` in the lint stage,
+  `build` producing `bin/bird_exporter`, `deploy` uploading to Nexus. MR !1 merged as `af8be80`,
+  pipeline 72663 green, deploy job printed
+  `uploading bird_exporter-af8be804.tgz to https://nexus.fakecake.org repo [MASKED]`.
+- `INFRA_IMAGE`, `NEXUS_HOST`, `NEXUS_REPO`, `NEXUS_USER`, `NEXUS_PASSWORD` are inherited group CI/CD
+  variables. The agent service account cannot read them (`GET /projects/362/variables` is 403) and
+  `NEXUS_REPO` is masked in job traces, so the target repository is not visible from a job log.
+- `deploy` runs only when `$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH`. A branch pipeline gives lint and
+  build only, so a router-installable artifact needs a merge to `master`.
+- The upload is `curl --upload-file` without `--fail`, so a rejected upload still exits 0: a green
+  deploy job does not prove the asset exists. From this host the Nexus REST API and the browse
+  endpoints are not reachable anonymously (all 404), so the upload could not be confirmed. Use
+  `curl --fail --upload-file` when a silent failure is unacceptable.
+- The binary is built with `CGO_ENABLED=0`, so it is static and can be copied straight onto the
+  Debian routers; `bird_exporter -version` prints `git-<short-sha>`.
+
 ## Implementation lessons (OSPF topology metrics)
 
 - Metric names: the exporter prefix already ends with an underscore. `prefix+"_ospf_link_up"`
