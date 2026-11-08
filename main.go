@@ -56,6 +56,16 @@ var (
 	enableBabel      = flag.Bool("proto.babel", true, "Enables metrics for protocol Babel")
 	enableRPKI       = flag.Bool("proto.rpki", true, "Enables metrics for protocol RPKI")
 	enableBFD        = flag.Bool("proto.bfd", true, "Enables metrics for protocol BFD")
+	// OSPF topology detail groups. They need the new metric format (-format.new,
+	// enabled by default since v1.3). The lsdb, topology and route groups scale
+	// with the link state database and the routing table, so they are opt-in.
+	enableOSPFIfaceTable  = flag.Bool("ospf.interface", true, "Export OSPF interface table (bird_ospf_interface_*)")
+	enableOSPFNeighbors   = flag.Bool("ospf.neighbors", true, "Export OSPF adjacencies as link metrics (bird_ospf_link_*, bird_ospf_neighbor_*)")
+	enableOSPFDatabase    = flag.Bool("ospf.lsdb", false, "Export aggregated OSPF link state database counters (bird_ospf_lsa_count)")
+	enableOSPFDatabaseDet = flag.Bool("ospf.lsdb.details", false, "Export age and sequence of every LSA (bird_ospf_lsa_age_seconds, bird_ospf_lsa_sequence)")
+	enableOSPFTopology    = flag.Bool("ospf.topology", false, "Export the SPF calculation (bird_ospf_spf_*)")
+	enableOSPFTopologyAll = flag.Bool("ospf.topology.all", false, "With -ospf.topology, export the SPF tree of every router in the area")
+	enableOSPFRoutesFlag  = flag.Bool("ospf.routes", false, "Export routes imported by OSPF (bird_ospf_route_*)")
 	// pre bird 2.0
 	bird6Socket            = flag.String("bird.socket6", "/var/run/bird6.ctl", "Socket to communicate with bird6 routing daemon (not compatible with -bird.v2)")
 	birdEnabled            = flag.Bool("bird.ipv4", true, "Get protocols from bird (not compatible with -bird.v2)")
@@ -211,10 +221,23 @@ func handleMetricsRequest(w http.ResponseWriter, r *http.Request) {
 		p,
 		*descriptionLabels,
 		statusSocketPath(*birdV2, *birdEnabled, *birdSocket, *bird6Socket),
+		ospfTopologyOptions(),
 	)
 	reg.MustRegister(c)
 
 	newPrometheusHandler(reg).ServeHTTP(w, r)
+}
+
+func ospfTopologyOptions() exportermetrics.OSPFTopologyOptions {
+	return exportermetrics.OSPFTopologyOptions{
+		Interfaces:  *enableOSPFIfaceTable,
+		Neighbors:   *enableOSPFNeighbors,
+		LSDB:        *enableOSPFDatabase,
+		LSDBDetail:  *enableOSPFDatabaseDet,
+		Topology:    *enableOSPFTopology,
+		TopologyAll: *enableOSPFTopologyAll,
+		Routes:      *enableOSPFRoutesFlag,
+	}
 }
 
 func statusSocketPath(birdV2, birdEnabled bool, birdSocket, bird6Socket string) string {

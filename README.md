@@ -132,9 +132,48 @@ There are three Grafana dashboards available for this exporter. Check the [grafa
 
 - BGP session state
 - OSPF neighbor/interface count
+- OSPF topology: adjacencies per interface, LSA database, SPF results and routes (opt-in, see below)
 - imported / exported / filtered prefix counts / route state changes (BGP, OSPF, Kernel, Static, Device, Direct, Babel)
 - protocol uptimes (BGP, OSPF, BFD)
 - BFD session status
+
+## OSPF topology and protocol status metrics
+
+The OSPF exporter answers "which site is adjacent to which site, over which
+interface, at what cost, and is the adjacency actually up?". The metrics are
+opt-in, because they add series per interface, per LSA and per route:
+
+```
+bird_exporter -ospf.interface -ospf.neighbors -ospf.lsdb -ospf.topology -ospf.routes
+```
+
+Every interface of the protocol is reported, even when no neighbor answers, so
+a broken link reads as `bird_ospf_link_up 0` instead of disappearing.
+
+| Metric | Meaning |
+|--------|---------|
+| `bird_ospf_link_up{name,area,local_router_id,local_iface,local_network}` | 1 only when the interface has a neighbor in state Full (or Establishing for NBMA) |
+| `bird_ospf_link_info{...,remote_router_id,remote_ip,state,role,priority}` | the far end of every adjacency that exists |
+| `bird_ospf_neighbor_state{...,neighbor_id}` | OSPF finite state machine: Init=2, 2Way=3, ExStart=4, Exchange=5, Loading=6, Full=7 |
+| `bird_ospf_neighbor_hold_timer_seconds{...,neighbor_id}` | remaining hold timer, sawtooth 20 -> 0 with `dead 20` |
+| `bird_ospf_interface_info{...,iface,area,network,type,state,stub}` | every configured OSPF interface, `stub=yes` for passive ones |
+| `bird_ospf_interface_cost{...,iface}` | configured interface cost |
+| `bird_ospf_interface_dr_info{...,dr_id,dr_ip,bdr_id,bdr_ip}` | designated router of a broadcast segment |
+| `bird_ospf_lsa_count{name,area,type}` | LSA count per type and area (`area` is empty for the global table) |
+| `bird_ospf_lsa_age_seconds` / `bird_ospf_lsa_sequence` | per LSA, only with `-ospf.lsdb.details` |
+| `bird_ospf_spf_distance{name,area,root,root_kind}` | root of each SPF run, distance 0 = this router |
+| `bird_ospf_spf_node_metric{...,kind,peer,prefix}` | cost from the root to a node, cheapest path wins |
+| `bird_ospf_spf_network_router{...,network,dr,member}` | members of a transit segment, `is_dr` labels the DR |
+| `bird_ospf_route_info{...,prefix,advertised_by,nexthop_ip,iface,type}` | OSPF routes and who advertises them |
+| `bird_ospf_route_metric1` / `bird_ospf_route_best` | metric and best-route flag per route |
+
+`local_router_id` carries the router ID of the local instance, so a map can join
+the metrics of many routers by router ID without extra configuration. The
+router ID and the configured hostname are also published as labels of
+`bird_daemon_info`.
+
+Note that the topology metrics print the area as a dotted quad (`area="0.0.0.0"`),
+while the older `bird_ospf_*_count` metrics use the short form (`area="0"`).
 
 ## Third Party Components
 

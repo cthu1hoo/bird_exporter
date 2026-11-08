@@ -2,3 +2,5 @@
 .idea
 *.iml
 bird_exporter
+/bin/
+/.build/
