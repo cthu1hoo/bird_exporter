@@ -16,12 +16,14 @@ type MetricCollector struct {
 	status           *metrics.StatusExporter
 }
 
-func NewMetricCollector(newFormat bool, enabledProtocols protocol.Proto, descriptionLabels bool, socketPath string) *MetricCollector {
+func NewMetricCollector(newFormat bool, enabledProtocols protocol.Proto, descriptionLabels bool, socketPath string,
+	ospfTopology metrics.OSPFTopologyOptions,
+) *MetricCollector {
 	c := getClient()
 	var e map[protocol.Proto][]metrics.MetricExporter
 
 	if newFormat {
-		e = exportersForDefault(c, descriptionLabels)
+		e = exportersForDefault(c, descriptionLabels, ospfTopology)
 	} else {
 		e = exportersForLegacy(c)
 	}
@@ -62,7 +64,9 @@ func exportersForLegacy(c *client.BirdClient) map[protocol.Proto][]metrics.Metri
 	}
 }
 
-func exportersForDefault(c *client.BirdClient, descriptionLabels bool) map[protocol.Proto][]metrics.MetricExporter {
+func exportersForDefault(c *client.BirdClient, descriptionLabels bool,
+	ospfTopology metrics.OSPFTopologyOptions,
+) map[protocol.Proto][]metrics.MetricExporter {
 	l := metrics.NewDefaultLabelStrategy(descriptionLabels, *descriptionLabelsRegex)
 	e := metrics.NewGenericProtocolMetricExporter("bird_protocol", true, l)
 
@@ -70,7 +74,8 @@ func exportersForDefault(c *client.BirdClient, descriptionLabels bool) map[proto
 		protocol.BGP:    {e},
 		protocol.Direct: {e},
 		protocol.Kernel: {e},
-		protocol.OSPF:   {e, metrics.NewOSPFExporter("bird_", c)},
+		protocol.OSPF: {e, metrics.NewOSPFExporter("bird_", c),
+			metrics.NewOSPFTopologyExporter("bird_", c, ospfTopology)},
 		protocol.Static: {e},
 		protocol.Babel:  {e},
 		protocol.RPKI:   {e},

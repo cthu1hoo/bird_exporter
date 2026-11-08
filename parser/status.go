@@ -10,6 +10,7 @@ import (
 type Status struct {
 	Version      string
 	RouterID     string
+	Hostname     string
 	ServerTime   time.Time
 	LastReboot   time.Time
 	LastReconfig time.Time
@@ -19,6 +20,7 @@ type Status struct {
 var (
 	reVersion    = regexp.MustCompile(`BIRD (\S+)`)
 	reRouterID   = regexp.MustCompile(`Router ID is (\S+)`)
+	reHostname   = regexp.MustCompile(`Hostname is (\S+)`)
 	reServerTime = regexp.MustCompile(`Current server time is (.+)`)
 	reReboot     = regexp.MustCompile(`Last reboot on (.+)`)
 	reReconfig   = regexp.MustCompile(`Last reconfiguration on (.+)`)
@@ -42,6 +44,9 @@ func ParseStatusWithError(b []byte) (*Status, error) {
 	}
 	if m := reRouterID.FindStringSubmatch(out); len(m) > 1 {
 		s.RouterID = m[1]
+	}
+	if m := reHostname.FindStringSubmatch(out); len(m) > 1 {
+		s.Hostname = m[1]
 	}
 	if m := reServerTime.FindStringSubmatch(out); len(m) > 1 {
 		t, err := time.ParseInLocation(birdTimestampLayout, strings.TrimSpace(m[1]), time.Local)

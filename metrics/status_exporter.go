@@ -29,7 +29,7 @@ func NewStatusExporter(c *client.BirdClient, socketPath string) *StatusExporter 
 		infoDesc: prometheus.NewDesc(
 			"bird_daemon_info",
 			"Static information about BIRD",
-			[]string{"router_id", "version"}, nil,
+			[]string{"router_id", "version", "hostname"}, nil,
 		),
 		lastRebootDesc: prometheus.NewDesc(
 			"bird_last_reboot_timestamp_seconds",
@@ -69,7 +69,8 @@ func (e *StatusExporter) Collect(ch chan<- prometheus.Metric) {
 		daemonUp = 1
 	}
 	ch <- prometheus.MustNewConstMetric(e.upDesc, prometheus.GaugeValue, daemonUp)
-	ch <- prometheus.MustNewConstMetric(e.infoDesc, prometheus.GaugeValue, 1, s.RouterID, s.Version)
+	ch <- prometheus.MustNewConstMetric(e.infoDesc, prometheus.GaugeValue, 1, s.RouterID, s.Version,
+		s.Hostname)
 
 	if !s.LastReboot.IsZero() {
 		ch <- prometheus.MustNewConstMetric(e.lastRebootDesc, prometheus.GaugeValue, float64(s.LastReboot.Unix()))

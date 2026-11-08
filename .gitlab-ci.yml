@@ -1,0 +1,65 @@
+variables:
+  GOPROXY: "https://nexus.fakecake.org/repository/go,direct"
+  GOSUMDB: "off"
+  GOCACHE: "${CI_PROJECT_DIR}/.gocache/"
+
+stages:
+  - lint
+  - build
+  - deploy
+
+golangci-lint:
+  stage: lint
+  image: registry.fakecake.org/docker.io/golang:1.26
+  before_script:
+    - go mod download
+    - go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+  script:
+    - golangci-lint run --timeout=5m
+  cache: &go_cache
+    paths:
+      - .gocache/
+
+gotest:
+  stage: lint
+  image: registry.fakecake.org/docker.io/golang:1.26
+  before_script:
+    - go mod download
+  script:
+    - go test -race -count=1 -coverprofile=coverage.out ./...
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.out
+  cache: *go_cache
+
+build:
+  stage: build
+  image: registry.fakecake.org/docker.io/golang:1.26
+  before_script:
+    - go mod download
+  script:
+    - CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=git-${CI_COMMIT_SHORT_SHA}" -o bin/bird_exporter .
+    - ./bin/bird_exporter -version
+  artifacts:
+    paths:
+      - bin/bird_exporter
+  cache: *go_cache
+
+deploy:
+  stage: deploy
+  image: ${INFRA_IMAGE}
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - mv bin/bird_exporter "bird_exporter-${CI_COMMIT_SHORT_SHA}"
+    - tar czfv "bird_exporter-${CI_COMMIT_SHORT_SHA}.tgz" "bird_exporter-${CI_COMMIT_SHORT_SHA}"
+    - |
+      for pkg in "bird_exporter-${CI_COMMIT_SHORT_SHA}.tgz"; do
+        echo uploading $pkg to ${NEXUS_HOST} repo ${NEXUS_REPO}...
+
+        curl --user "${NEXUS_USER}:${NEXUS_PASSWORD}" \
+          --upload-file $pkg \
+          "${NEXUS_HOST}/repository/${NEXUS_REPO}/${CI_PROJECT_NAME}/"
+      done
