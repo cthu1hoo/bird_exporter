@@ -21,6 +21,36 @@ var (
 	)
 )
 
+// lookupRoot returns the block for an area/identity pair, creating it once.
+// BIRD can name the same root twice, so the blocks are merged instead of being
+// collected twice: a second series with identical labels would abort the whole
+// Prometheus scrape.
+func lookupRoot(roots *[]*protocol.OSPFSpfRoot, byKey map[string]*protocol.OSPFSpfRoot,
+	area, kind, identity string,
+) *protocol.OSPFSpfRoot {
+	key := area + "\x00" + kind + "\x00" + identity
+	if root, seen := byKey[key]; seen {
+		return root
+	}
+
+	root := &protocol.OSPFSpfRoot{Area: area, Kind: kind, Identity: identity}
+	byKey[key] = root
+	*roots = append(*roots, root)
+
+	return root
+}
+
+// contains reports whether a slice already holds a value.
+func contains(values []string, value string) bool {
+	for _, current := range values {
+		if current == value {
+			return true
+		}
+	}
+
+	return false
+}
+
 // ParseOSPFTopology parses the SPF output of "show ospf topology",
 // "show ospf topology all", "show ospf state" and "show ospf state all".
 //
@@ -40,8 +70,11 @@ func ParseOSPFTopologyWithError(data []byte) ([]*protocol.OSPFSpfRoot, error) {
 	scanner.Buffer(make([]byte, 64<<10), maxProtocolLineBytes)
 
 	roots := make([]*protocol.OSPFSpfRoot, 0)
+	rootsByKey := map[string]*protocol.OSPFSpfRoot{}
+	distanceOf := map[*protocol.OSPFSpfRoot]bool{}
 	area := ""
 	var current *protocol.OSPFSpfRoot
+	rootLevel := -1
 
 	for scanner.Scan() {
 		raw := stripReplyCode(scanner.Text())
@@ -55,12 +88,17 @@ func ParseOSPFTopologyWithError(data []byte) ([]*protocol.OSPFSpfRoot, error) {
 		if m := ospfTreeArea.FindStringSubmatch(line); m != nil {
 			area = m[1]
 			current = nil
+			rootLevel = -1
 			continue
 		}
 
-		if m := ospfTreeRoot.FindStringSubmatch(line); m != nil && level <= 1 {
-			current = &protocol.OSPFSpfRoot{Area: area, Kind: m[1], Identity: m[2]}
-			roots = append(roots, current)
+		// A block header is a line at the indentation the first block of the
+		// area uses. Anything deeper belongs to the block that is open, so the
+		// metric-less "router <id>" membership lines of a transit network do not
+		// open a second root, no matter how far BIRD indents them.
+		if m := ospfTreeRoot.FindStringSubmatch(line); m != nil && (current == nil || level <= rootLevel) {
+			current = lookupRoot(&roots, rootsByKey, area, m[1], m[2])
+			rootLevel = level
 			continue
 		}
 
@@ -69,7 +107,11 @@ func ParseOSPFTopologyWithError(data []byte) ([]*protocol.OSPFSpfRoot, error) {
 		}
 
 		if m := ospfTreeDistance.FindStringSubmatch(line); m != nil {
-			current.Distance = parseInt(m[1])
+			if _, seen := distanceOf[current]; !seen {
+				distanceOf[current] = true
+				current.Distance = parseInt(m[1])
+			}
+
 			continue
 		}
 
@@ -88,7 +130,7 @@ func ParseOSPFTopologyWithError(data []byte) ([]*protocol.OSPFSpfRoot, error) {
 
 		// Routers attached to a transit network are listed without a metric.
 		if m[4] == "" {
-			if kind == "router" && current.Kind == "network" {
+			if kind == "router" && current.Kind == "network" && !contains(current.Routers, identity) {
 				current.Routers = append(current.Routers, identity)
 			}
 

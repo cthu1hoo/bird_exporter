@@ -3,6 +3,7 @@ package metrics
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/czerwonk/bird_exporter/client"
 	"github.com/czerwonk/bird_exporter/protocol"
@@ -27,6 +28,32 @@ type OSPFTopologyOptions struct {
 
 func (o OSPFTopologyOptions) anyEnabled() bool {
 	return o.Interfaces || o.Neighbors || o.LSDB || o.LSDBDetail || o.Topology || o.Routes
+}
+
+// seriesGuard drops a series whose full label set was already emitted for this
+// protocol instance. BIRD can print the same entry twice, and one duplicated
+// label set makes the Prometheus registry reject the whole scrape, which would
+// take every other metric down with it.
+type seriesGuard struct {
+	keys map[string]struct{}
+}
+
+func newSeriesGuard() *seriesGuard {
+	return &seriesGuard{keys: map[string]struct{}{}}
+}
+
+func (g *seriesGuard) set(ch chan<- prometheus.Metric, desc *prometheus.Desc, value float64,
+	labels ...string,
+) {
+	key := fmt.Sprintf("%p", desc) + "\x00" + strings.Join(labels, "\x00")
+	if _, duplicate := g.keys[key]; duplicate {
+		log.Warnf("skipping duplicate OSPF metric %s with labels %v", desc.String(), labels)
+
+		return
+	}
+
+	g.keys[key] = struct{}{}
+	ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, value, labels...)
 }
 
 // neighborStateValues maps the OSPF finite state machine to numbers, in the
@@ -190,6 +217,8 @@ func (m *ospfTopologyMetricExporter) Export(p *protocol.Protocol, ch chan<- prom
 		return
 	}
 
+	guard := newSeriesGuard()
+
 	localRouterID, err := m.client.GetRouterID(p)
 	if err != nil {
 		log.Errorf("could not get router ID for OSPF protocol %q: %v", p.Name, err)
@@ -223,7 +252,7 @@ func (m *ospfTopologyMetricExporter) Export(p *protocol.Protocol, ch chan<- prom
 
 	if m.options.Interfaces {
 		for _, iface := range interfaces {
-			m.exportInterface(p, iface, ch)
+			m.exportInterface(p, iface, ch, guard)
 		}
 	}
 
@@ -232,11 +261,11 @@ func (m *ospfTopologyMetricExporter) Export(p *protocol.Protocol, ch chan<- prom
 		for _, neighbor := range neighbors {
 			neighbor.Area = areaOf(byInterface, neighbor.Interface)
 			adjacency[neighbor.Interface] = neighbor
-			m.exportNeighbor(p, neighbor, ch)
+			m.exportNeighbor(p, neighbor, ch, guard)
 		}
 
 		for _, iface := range interfaces {
-			m.exportLink(p, localRouterID, iface, adjacency[iface.Name], ch)
+			m.exportLink(p, localRouterID, iface, adjacency[iface.Name], ch, guard)
 		}
 	}
 
@@ -245,7 +274,7 @@ func (m *ospfTopologyMetricExporter) Export(p *protocol.Protocol, ch chan<- prom
 		if err != nil {
 			log.Errorf("could not get OSPF link state database for protocol %q: %v", p.Name, err)
 		} else {
-			m.exportLSDB(p, lsas, ch)
+			m.exportLSDB(p, lsas, ch, guard)
 		}
 	}
 
@@ -254,7 +283,7 @@ func (m *ospfTopologyMetricExporter) Export(p *protocol.Protocol, ch chan<- prom
 		if err != nil {
 			log.Errorf("could not get OSPF topology for protocol %q: %v", p.Name, err)
 		} else {
-			m.exportTopology(p, roots, ch)
+			m.exportTopology(p, roots, ch, guard)
 		}
 	}
 
@@ -263,31 +292,30 @@ func (m *ospfTopologyMetricExporter) Export(p *protocol.Protocol, ch chan<- prom
 		if err != nil {
 			log.Errorf("could not get OSPF routes for protocol %q: %v", p.Name, err)
 		} else {
-			m.exportRoutes(p, routes, ch)
+			m.exportRoutes(p, routes, ch, guard)
 		}
 	}
 }
 
 func (m *ospfTopologyMetricExporter) exportInterface(p *protocol.Protocol, iface *protocol.OSPFInterface,
-	ch chan<- prometheus.Metric,
+	ch chan<- prometheus.Metric, guard *seriesGuard,
 ) {
 	d := m.descriptions
 	area := iface.Area
 
-	ch <- prometheus.MustNewConstMetric(d.interfaceInfo, prometheus.GaugeValue, 1,
+	guard.set(ch, d.interfaceInfo, 1,
 		p.Name, area, iface.Name, iface.Network, iface.Type, iface.State, boolLabel(iface.Stub))
 
-	ch <- prometheus.MustNewConstMetric(d.interfaceCost, prometheus.GaugeValue,
-		float64(iface.Cost), p.Name, area, iface.Name)
+	guard.set(ch, d.interfaceCost, float64(iface.Cost), p.Name, area, iface.Name)
 
 	if iface.DRID != "" || iface.DRIp != "" {
-		ch <- prometheus.MustNewConstMetric(d.interfaceDRInfo, prometheus.GaugeValue, 1,
+		guard.set(ch, d.interfaceDRInfo, 1,
 			p.Name, area, iface.Name, iface.DRID, iface.DRIp, iface.BDRID, iface.BDRIp)
 	}
 }
 
 func (m *ospfTopologyMetricExporter) exportNeighbor(p *protocol.Protocol, neighbor *protocol.OSPFNeighbor,
-	ch chan<- prometheus.Metric,
+	ch chan<- prometheus.Metric, guard *seriesGuard,
 ) {
 	d := m.descriptions
 
@@ -299,13 +327,13 @@ func (m *ospfTopologyMetricExporter) exportNeighbor(p *protocol.Protocol, neighb
 	}
 
 	labels := []string{p.Name, neighbor.Area, neighbor.Interface, neighbor.RouterID, neighbor.NeighborIP}
-	ch <- prometheus.MustNewConstMetric(d.neighborState, prometheus.GaugeValue, state, labels...)
-	ch <- prometheus.MustNewConstMetric(d.neighborHoldTimer, prometheus.GaugeValue,
-		neighbor.HoldTimer, labels...)
+	guard.set(ch, d.neighborState, state, labels...)
+	guard.set(ch, d.neighborHoldTimer, neighbor.HoldTimer, labels...)
 }
 
 func (m *ospfTopologyMetricExporter) exportLink(p *protocol.Protocol, localRouterID string,
 	iface *protocol.OSPFInterface, neighbor *protocol.OSPFNeighbor, ch chan<- prometheus.Metric,
+	guard *seriesGuard,
 ) {
 	d := m.descriptions
 	base := []string{p.Name, iface.Area, localRouterID, iface.Name, iface.Network}
@@ -315,19 +343,19 @@ func (m *ospfTopologyMetricExporter) exportLink(p *protocol.Protocol, localRoute
 		up = 1
 	}
 
-	ch <- prometheus.MustNewConstMetric(d.linkUp, prometheus.GaugeValue, up, base...)
+	guard.set(ch, d.linkUp, up, base...)
 
 	if neighbor == nil {
 		return
 	}
 
-	ch <- prometheus.MustNewConstMetric(d.linkInfo, prometheus.GaugeValue, 1,
+	guard.set(ch, d.linkInfo, 1,
 		append(base, neighbor.RouterID, neighbor.NeighborIP, neighbor.State, neighbor.Role,
 			fmt.Sprintf("%d", neighbor.Priority))...)
 }
 
 func (m *ospfTopologyMetricExporter) exportLSDB(p *protocol.Protocol, lsas []*protocol.OSPFLSA,
-	ch chan<- prometheus.Metric,
+	ch chan<- prometheus.Metric, guard *seriesGuard,
 ) {
 	d := m.descriptions
 
@@ -349,8 +377,7 @@ func (m *ospfTopologyMetricExporter) exportLSDB(p *protocol.Protocol, lsas []*pr
 	}
 
 	for _, key := range order {
-		ch <- prometheus.MustNewConstMetric(d.lsaCount, prometheus.GaugeValue, float64(counts[key]),
-			p.Name, key.area, key.kind)
+		guard.set(ch, d.lsaCount, float64(counts[key]), p.Name, key.area, key.kind)
 	}
 
 	if !m.options.LSDBDetail {
@@ -359,24 +386,21 @@ func (m *ospfTopologyMetricExporter) exportLSDB(p *protocol.Protocol, lsas []*pr
 
 	for _, lsa := range lsas {
 		labels := []string{p.Name, lsa.Area, lsa.Type, lsa.LSID, lsa.Router}
-		ch <- prometheus.MustNewConstMetric(d.lsaAge, prometheus.GaugeValue, float64(lsa.Age), labels...)
-		ch <- prometheus.MustNewConstMetric(d.lsaSequence, prometheus.GaugeValue,
-			float64(parseHexSequence(lsa.Sequence)), labels...)
+		guard.set(ch, d.lsaAge, float64(lsa.Age), labels...)
+		guard.set(ch, d.lsaSequence, float64(parseHexSequence(lsa.Sequence)), labels...)
 	}
 }
 
 func (m *ospfTopologyMetricExporter) exportTopology(p *protocol.Protocol, roots []*protocol.OSPFSpfRoot,
-	ch chan<- prometheus.Metric,
+	ch chan<- prometheus.Metric, guard *seriesGuard,
 ) {
 	d := m.descriptions
 
 	for _, root := range roots {
-		ch <- prometheus.MustNewConstMetric(d.spfDistance, prometheus.GaugeValue,
-			float64(root.Distance), p.Name, root.Area, root.Identity, root.Kind)
+		guard.set(ch, d.spfDistance, float64(root.Distance), p.Name, root.Area, root.Identity, root.Kind)
 
 		for _, router := range root.Routers {
-			ch <- prometheus.MustNewConstMetric(d.spfNetworkRouter, prometheus.GaugeValue, 1,
-				p.Name, root.Area, root.Identity, router, root.DR)
+			guard.set(ch, d.spfNetworkRouter, 1, p.Name, root.Area, root.Identity, router, root.DR)
 		}
 
 		type nodeKey struct {
@@ -405,32 +429,29 @@ func (m *ospfTopologyMetricExporter) exportTopology(p *protocol.Protocol, roots 
 		}
 
 		for _, key := range order {
-			ch <- prometheus.MustNewConstMetric(d.spfNodeMetric, prometheus.GaugeValue,
-				float64(best[key]), p.Name, root.Area, root.Identity, key.kind, key.peer, key.prefix,
-				key.metricType)
+			guard.set(ch, d.spfNodeMetric, float64(best[key]), p.Name, root.Area, root.Identity,
+				key.kind, key.peer, key.prefix, key.metricType)
 		}
 	}
 }
 
 func (m *ospfTopologyMetricExporter) exportRoutes(p *protocol.Protocol, routes []*protocol.OSPFRoute,
-	ch chan<- prometheus.Metric,
+	ch chan<- prometheus.Metric, guard *seriesGuard,
 ) {
 	d := m.descriptions
 
 	for _, route := range routes {
 		labels := []string{p.Name, route.Prefix, route.AdvertisedBy, route.NextHopIP, route.Interface}
 
-		ch <- prometheus.MustNewConstMetric(d.routeInfo, prometheus.GaugeValue, 1,
-			append(labels, route.Type)...)
-		ch <- prometheus.MustNewConstMetric(d.routeMetric, prometheus.GaugeValue,
-			float64(route.Metric1), labels...)
+		guard.set(ch, d.routeInfo, 1, append(labels, route.Type)...)
+		guard.set(ch, d.routeMetric, float64(route.Metric1), labels...)
 
 		best := float64(0)
 		if route.Best {
 			best = 1
 		}
 
-		ch <- prometheus.MustNewConstMetric(d.routeBest, prometheus.GaugeValue, best, labels...)
+		guard.set(ch, d.routeBest, best, labels...)
 	}
 }
 

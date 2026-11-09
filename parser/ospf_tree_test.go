@@ -30,6 +30,42 @@ const topologyLive = "\narea 0.0.0.0\n\n" +
 	"\t\trouter 203.0.113.1\n" +
 	"\t\trouter 203.0.113.2\n"
 
+// flatTopology uses one tab for the block headers and one for their children,
+// which is how the membership lines of a transit network reached the exporter
+// in a production reply. Those lines must not open a second root, and a root
+// named twice must be merged.
+const flatTopology = "area 0.0.0.0\n\n" +
+	"router 203.0.113.1\n" +
+	"\tdistance 0\n" +
+	"\trouter 203.0.113.3 metric 10\n" +
+	"\tnetwork 198.51.100.128/28 metric 10\n" +
+	"network 198.51.100.128/28\n" +
+	"\tdr 203.0.113.1\n" +
+	"\tdistance 10\n" +
+	"\trouter 203.0.113.1\n" +
+	"\trouter 203.0.113.3\n" +
+	"router 203.0.113.1\n" +
+	"\tdistance 20\n" +
+	"\trouter 203.0.113.3 metric 10\n"
+
+func TestParseOSPFTopologyFlatIndentation(t *testing.T) {
+	roots, err := ParseOSPFTopologyWithError([]byte(flatTopology))
+	require.NoError(t, err)
+	require.Len(t, roots, 2)
+
+	local := roots[0]
+	assert.Equal(t, "router", local.Kind)
+	assert.Equal(t, "203.0.113.1", local.Identity)
+
+	// The repeated block must not overwrite the distance of the first one.
+	assert.Equal(t, int64(0), local.Distance)
+
+	network := roots[1]
+	assert.Equal(t, "network", network.Kind)
+	assert.Equal(t, int64(10), network.Distance)
+	assert.Equal(t, []string{"203.0.113.1", "203.0.113.3"}, network.Routers)
+}
+
 func TestParseOSPFTopology(t *testing.T) {
 	roots, err := ParseOSPFTopologyWithError([]byte(topologyLive))
 	require.NoError(t, err)

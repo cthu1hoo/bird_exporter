@@ -126,6 +126,41 @@ primary group `daemon`). Recorded 2026-11-08 during the BIRD/OSPF metrics resear
 - The binary is built with `CGO_ENABLED=0`, so it is static and can be copied straight onto the
   Debian routers; `bird_exporter -version` prints `git-<short-sha>`.
 
+## Field report: duplicate `bird_ospf_spf_distance` (2026-11-09)
+
+First production run (`-ospf.lsdb -ospf.topology -ospf.routes`) failed the scrape:
+
+```
+collected metric "bird_ospf_spf_distance" {root:"147.45.138.221" ... gauge:{value:0}}
+  was collected before with the same name and label values
+collected metric "bird_ospf_spf_distance" {root:"109.68.212.12" ... gauge:{value:0}}
+  was collected before with the same name and label values
+```
+
+What the error tells us:
+
+- one duplicated label set kills the entire scrape, not just one metric;
+- exactly two roots were duplicated, and both carry `distance 0`, the value of a block with no
+  `distance` line. Those two router IDs are the members of the transit network
+  `192.168.112.128/28`, so the metric-less `router <id>` membership lines of a network root opened
+  a second root block instead of being read as members;
+- the recorded capture indents those lines with two tabs, the live reply did not indent them deeper
+  than the block headers, so the fixed two-level rule in the parser was the wrong assumption.
+
+Fixes, both needed:
+
+- `parser/ospf_tree.go` now finds block headers by *relative* indentation (the level of the first
+  block in an area) and merges a root that is named more than once, so a repeat cannot produce two
+  roots. Membership lines deeper than the header go to `Routers`, with duplicates dropped.
+- `metrics/ospf_topology_exporter.go` has a per-protocol `seriesGuard`: a label set already emitted
+  is dropped with a warning instead of reaching the registry.
+
+Rule to keep: BIRD output must never decide series uniqueness on its own. Every collector that
+iterates over protocol output needs a duplicate guard.
+
+Open check: ask for `birdc "show ospf topology ospf1" | cat -A` from the affected host to confirm
+the exact indentation, because the fix is defensive and does not prove which layout BIRD used.
+
 ## Implementation lessons (OSPF topology metrics)
 
 - Metric names: the exporter prefix already ends with an underscore. `prefix+"_ospf_link_up"`
