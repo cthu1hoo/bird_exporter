@@ -309,6 +309,37 @@ func TestOSPFTopologyExporterSurvivesQueryErrors(t *testing.T) {
 	assert.Nil(t, families["bird_ospf_route_info"])
 }
 
+// TestOSPFTopologyExporterSkipsDuplicateSeries guards the scrape: one duplicated
+// label set makes the Prometheus registry reject every metric of the scrape,
+// and BIRD has been seen to name the same SPF root twice.
+func TestOSPFTopologyExporterSkipsDuplicateSeries(t *testing.T) {
+	c := ospfFixtureClient()
+	c.interfaces = []*protocol.OSPFInterface{
+		{Name: "eth1", Area: "0.0.0.0", Network: "198.51.100.128/28", Type: "broadcast", State: "DR", Cost: 10},
+		{Name: "eth1", Area: "0.0.0.0", Network: "198.51.100.128/28", Type: "broadcast", State: "DR", Cost: 10},
+	}
+	c.neighbors = []*protocol.OSPFNeighbor{
+		{RouterID: "203.0.113.2", State: "Full", Role: "BDR", Interface: "eth1", NeighborIP: "198.51.100.132"},
+		{RouterID: "203.0.113.2", State: "Full", Role: "BDR", Interface: "eth1", NeighborIP: "198.51.100.132"},
+	}
+	c.roots = []*protocol.OSPFSpfRoot{
+		{Area: "0.0.0.0", Kind: "router", Identity: "203.0.113.1", Distance: 0},
+		{Area: "0.0.0.0", Kind: "router", Identity: "203.0.113.1", Distance: 0},
+		{Area: "0.0.0.0", Kind: "router", Identity: "203.0.113.3", Distance: 0},
+		{Area: "0.0.0.0", Kind: "network", Identity: "198.51.100.128/28", Distance: 10,
+			DR: "203.0.113.1", Routers: []string{"203.0.113.1", "203.0.113.1"}},
+	}
+
+	families := gather(t, NewOSPFTopologyExporter("bird_", c, allOptionsEnabled()), ospfProtocol())
+
+	assert.Len(t, families["bird_ospf_interface_info"].GetMetric(), 1)
+	assert.Len(t, families["bird_ospf_link_up"].GetMetric(), 1)
+	assert.Len(t, families["bird_ospf_link_info"].GetMetric(), 1)
+	assert.Len(t, families["bird_ospf_neighbor_state"].GetMetric(), 1)
+	assert.Len(t, families["bird_ospf_spf_distance"].GetMetric(), 3)
+	assert.Len(t, families["bird_ospf_spf_network_router"].GetMetric(), 1)
+}
+
 // TestOSPFTopologyExportersParseLiveCaptures feeds the recorded production
 // output through the real parsers and the exporter, to make sure the metric
 // shapes hold for a full adjacency set.
